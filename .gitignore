@@ -1,0 +1,26 @@
+# Build artifacts
+build/
+build-*/
+cmake-build-*/
+*.exe
+*.out
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.pdb
+
+# IDE & Editor files
+.vscode/
+.idea/
+.vs/
+*.swp
+*.swo
+.cache/
+compile_commands.json
+
+# OS files
+.DS_Store
+Thumbs.db
