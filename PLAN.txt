@@ -1,0 +1,255 @@
+================================================================================
+KẾ HOẠCH & LỘ TRÌNH PHÁT TRIỂN DỰ ÁN: LIMIT ORDER BOOK & MATCHING ENGINE (C++)
+================================================================================
+
+1. MỤC TIÊU CHUNG
+--------------------------------------------------------------------------------
+- Cùng nhau xây dựng hoàn chỉnh hệ thống Limit Order Book & Matching Engine bằng C++17.
+- Trọng tâm: Hiểu sâu bản chất (thị trường tài chính, cấu trúc dữ liệu & giải thuật,
+  bộ nhớ/vòng đời đối tượng C++, kiểm thử và đo đạc hiệu năng), không copy-paste.
+- Áp dụng đúng quy trình làm việc nhóm thực tế bằng GitHub (Fork + Pull Request +
+  Code Review chéo + CI tự động).
+
+
+2. THÔNG TIN REPOSITORY & QUY TRÌNH LÀM VIỆC NHÓM (FORK + PULL REQUEST)
+--------------------------------------------------------------------------------
+- Repo gốc (upstream): https://github.com/ruicosta-bk/limit-order-book.git
+- Trạng thái hiện tại: Đã có commit nền Phase 0 trên nhánh `main` (cấu trúc thư mục,
+  CMakeLists.txt, khung test, GitHub Actions CI, .gitignore, CONTRIBUTING.md).
+
+Vai trò trên Git:
+- Thành viên 1 (Chủ repo `ruicosta-bk`): Tạo nhánh `feat/...` trên `origin` -> mở PR vào `main`.
+- Thành viên 2 (Fork): Fork repo gốc -> clone bản Fork -> gắn `upstream` -> mở PR vào repo gốc.
+
+Quy trình cho Thành viên 2 (Fork):
+  Bước 1: Bấm nút "Fork" trên trang repo gốc về tài khoản GitHub cá nhân.
+  Bước 2: Clone bản Fork về máy và gắn remote `upstream`:
+          git clone https://github.com/<username>/limit-order-book.git
+          cd limit-order-book
+          git remote add upstream https://github.com/ruicosta-bk/limit-order-book.git
+  Bước 3: Trước mỗi đầu việc, đồng bộ nhánh `main` từ `upstream`:
+          git checkout main
+          git fetch upstream
+          git merge upstream/main
+          git push origin main
+  Bước 4: Tạo nhánh riêng cho từng đầu việc (TUYỆT ĐỐI KHÔNG code trực tiếp trên `main`):
+          git checkout -b feat/<tên-tính-năng>
+  Bước 5: Build và chạy toàn bộ test pass 100% trên máy:
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+          (Nếu không có Ninja thì bỏ cờ `-G Ninja`)
+  Bước 6: Commit theo Conventional Commits (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`),
+          push nhánh lên Fork và mở Pull Request vào `ruicosta-bk/limit-order-book:main`.
+
+Nguyên tắc CHỐNG XUNG ĐỘT (MERGE CONFLICT):
+  1) Không bao giờ để 2 người sửa cùng một vùng khai báo trong `OrderBook.h` cùng lúc.
+     Ở Phase có thay đổi cấu trúc dữ liệu (Phase 1, 3, 4), PR sửa Header sẽ MERGE TRƯỚC;
+     người còn lại chạy `git fetch/merge` lấy `main` mới nhất rồi làm PR kế tiếp.
+  2) Luôn đảo vai giữa "Core Engine" và "Test / Invariants / Interface" qua từng Phase
+     để cả hai người đều được tự tay code thuật toán lõi lẫn kiểm thử (tổng 12 PR = 6 PR/người).
+  3) Mỗi PR đều do người còn lại review theo Checklist 4 tiêu chí trước khi merge.
+
+Checklist Review chéo bắt buộc trước khi Merge PR:
+  [ ] CI trên GitHub Actions build xanh, 0 compiler warning (-Wall -Wextra -Wpedantic),
+      pass 100% test.
+  [ ] Độ phức tạp thời gian/bộ nhớ đúng thiết kế (không vô tình rớt xuống O(N)).
+  [ ] An toàn bộ nhớ C++ (không Dangling Reference sau erase, không Iterator Invalidation,
+      không quên xóa trong unordered_map).
+  [ ] Đã bao phủ edge cases (quantity == 0, sổ rỗng, khớp sạch tầng giá, trùng OrderId).
+
+
+3. CẤU TRÚC THƯ MỤC HIỆN TẠI
+--------------------------------------------------------------------------------
+limit-order-book/
+|-- CMakeLists.txt              (Cấu hình build C++17: lob_core, lob_cli, lob_tests)
+|-- CONTRIBUTING.md             (Hướng dẫn chi tiết Fork/PR & review)
+|-- README.md                   (Tài liệu tổng quan dự án)
+|-- .gitignore                  (Chặn build/, file binary, file IDE)
+|-- .github/workflows/ci.yml    (Tự động build + chạy test khi push/mở PR)
+|-- include/lob/OrderBook.h     (Header khai báo cấu trúc dữ liệu & API)
+|-- src/OrderBook.cpp           (Cài đặt chi tiết OrderBook)
+|-- src/main.cpp                (Chương trình CLI minh họa)
+`-- tests/test_orderbook.cpp    (Khung Unit Test tự động)
+
+
+4. HIỆN TRẠNG CODE CẦN SỬA NGAY Ở PHASE 1 (5 ĐIỂM KỸ THUẬT)
+--------------------------------------------------------------------------------
+1) Hàm `matchOrder()` đang viết trực tiếp trong OrderBook.h -> phải tách sang OrderBook.cpp
+   để giữ đúng kiến trúc Header/Source (hiện tại compiler báo warning lặp lại ở mỗi file
+   include OrderBook.h).
+2) Lệch API `getBestBid`/`getBestAsk`: comment hướng dẫn dùng `std::optional<Price>` (C++17)
+   nhưng code đang viết `bool getBestBid(Price &outPrice) const;` và thiếu `#include <optional>`.
+3) Thiếu `struct Trade` (Execution Report) trả về từ quá trình khớp lệnh; hai biến
+   `bestAskPrice`/`bestBuyPrice` đang dư sinh cảnh báo `-Wunused-variable`.
+   Nguyên tắc: Engine không in `std::cout` trong hàm khớp mà trả về `std::vector<Trade>`.
+4) Nhánh Buy và Sell trong `matchOrder()` bị trùng lặp logic ~95% -> dễ phát sinh bug lệch
+   trạng thái khi sang Phase 3 (Hash Map).
+5) OrderBook.cpp và main.cpp mới có khung comment, chưa có code cài đặt; chưa chặn edge cases
+   (`quantity == 0`, trùng `OrderId`).
+
+
+5. LỘ TRÌNH & PHÂN CÔNG CHI TIẾT TỪNG PHASE (12 PR — ĐẢO VAI, TRÁNH CONFLICT)
+--------------------------------------------------------------------------------
+Ký hiệu:
+- [TV1] = Chủ repo (`ruicosta-bk`)
+- [TV2] = Thành viên Fork
+
+--------------------------------------------------------------------------------
+[PHASE 0 - ĐÃ XONG] Hạ tầng Dự án, Git, CMake, CI & Khung Test
+- Đã push commit nền lên `main`, xác minh build + test pass 100%.
+
+--------------------------------------------------------------------------------
+[PHASE 1] Chuẩn hóa Thiết kế Core & Hệ Bất biến (Invariants)
+* Kiến thức bản chất & C++ cần nắm:
+  - Fixed-point integer (`uint64_t` ticks) vs `double` (tránh sai số IEEE 754).
+  - `std::optional<T>`, `std::nullopt` (C++17), `const`-correctness, tách `.h` / `.cpp`.
+  - 4 Bất biến toán học của Order Book (`checkInvariants()`):
+    (1) Best Bid < Best Ask (No Crossed Book)
+    (2) Không có LimitLevel rỗng trong bids_/asks_
+    (3) totalVolume == tổng remainingQuantity và mọi lệnh có remainingQuantity > 0
+    (4) (Từ Phase 3) orderIndex_ khớp 1-1 với tập lệnh trên sổ.
+
+* Phân công & Thứ tự Merge (Tuần tự để chốt Header trước):
+  - PR #1 [TV1] — Nhánh `feat/p1-core-api` (MERGE TRƯỚC)
+    + File sửa: `include/lob/OrderBook.h`, `src/OrderBook.cpp`
+    + Việc làm:
+      * Thêm `struct Trade { OrderId buyOrderId; OrderId sellOrderId; Price price; Quantity quantity; };`.
+      * Đổi `getBestBid()` / `getBestAsk()` sang `std::optional<Price>` (thêm `#include <optional>`).
+      * Đổi `addOrder(const Order& order)` trả về `std::vector<Trade>`.
+      * Khai báo `bool checkInvariants() const;`.
+      * Chuyển thân `matchOrder` từ `.h` sang `.cpp` (tạm để stub/gọn sạch không còn warning).
+      * Cài đặt `getBestBid()` và `getBestAsk()`.
+    + Reviewer: [TV2]
+
+  - PR #2 [TV2] — Nhánh `test/p1-empty-book` (Làm sau khi PR #1 merge)
+    + File sửa: `tests/test_orderbook.cpp`
+    + Việc làm:
+      * Viết test kiểm tra `getBestBid()` và `getBestAsk()` trả về `std::nullopt` khi sổ rỗng.
+      * Viết test kiểm tra khởi tạo `Order`, `Trade`, `LimitLevel`.
+    + Reviewer: [TV1]
+
+--------------------------------------------------------------------------------
+[PHASE 2] Hoàn thiện Matching Engine Core (Price-Time Priority / FIFO)
+* Kiến thức bản chất & C++ cần nắm:
+  - Maker (lệnh chờ trên sổ, quyết định GIÁ KHỚP) vs Taker (lệnh mới vào).
+  - Full Fill, Partial Fill, Multi-level Price Sweep.
+  - Dangling Reference sau `map.erase(it)` và lý do `std::map::begin()` là O(1).
+  - Reverse iterator (`rbegin()`/`rend()`), tách helper gọn tránh lặp nhánh Buy/Sell.
+
+* Phân công & Thứ tự Merge (Đảo vai — TV2 cầm Core, TV1 cầm Interface/Tests):
+  - PR #3 [TV2] — Nhánh `feat/p2-matching-engine` (MERGE TRƯỚC)
+    + File sửa: `src/OrderBook.cpp` (chỉ phần `addOrder` & `matchOrder`)
+    + Việc làm:
+      * Cài đặt `addOrder` và `matchOrder` trả về `std::vector<Trade>` (giá khớp theo Maker).
+      * Tách helper gọn để tránh copy-paste giữa nhánh Buy và Sell.
+      * Xử lý edge cases: từ chối lệnh `quantity == 0` hoặc `price == 0`.
+    + Reviewer: [TV1]
+
+  - PR #4 [TV1] — Nhánh `feat/p2-invariants-cli-tests`
+    (Có thể code song song `main.cpp` và `test_orderbook.cpp`, sau đó pull `main` từ PR #3 để chạy xanh)
+    + File sửa: `src/OrderBook.cpp` (chỉ phần `printOrderBook` & `checkInvariants`),
+                `src/main.cpp`, `tests/test_orderbook.cpp`
+    + Việc làm:
+      * Cài đặt `printOrderBook()` (Asks từ cao xuống thấp, Spread, Bids từ cao xuống thấp).
+      * Cài đặt `checkInvariants()` (bất biến 1, 2, 3).
+      * Hoàn thiện kịch bản minh họa trong `src/main.cpp`.
+      * Viết đầy đủ Unit Test Phase 2: Resting orders, FIFO cùng mức giá, Partial/Full fill,
+        Multi-level price sweep, Edge cases (`qty == 0`, `price == 0`) kèm gọi `checkInvariants()`.
+    + Reviewer: [TV2]
+
+--------------------------------------------------------------------------------
+[PHASE 3] Hủy lệnh O(1) (`Cancel Order`) & Sửa lệnh (`Modify / Cancel-Replace`)
+* Kiến thức bản chất & C++ cần nắm:
+  - Iterator Stability: Vì sao `std::list` giữ iterator ổn định còn `std::vector` thì không.
+  - `std::unordered_map<OrderId, OrderLocation>` và độ phức tạp thực tế:
+    O(1) hủy giữa hàng đợi, O(log M) hoặc O(1) amortized khi xóa mức giá rỗng khỏi `std::map`.
+  - Đồng bộ 2 chiều: Phải xóa khỏi `orderIndex_` ở CẢ `cancelOrder` LẪN khi khớp hết trong `matchOrder`.
+  - Luật ưu tiên thời gian khi `Modify`: giảm qty giữ nguyên FIFO; tăng qty/đổi giá mất FIFO.
+
+* Phân công & Thứ tự Merge (Đảo vai — TV1 cầm Core Hash Map, TV2 cầm Modify & Tests):
+  - PR #5 [TV1] — Nhánh `feat/p3-cancel-o1` (MERGE TRƯỚC vì thêm `orderIndex_` vào Header)
+    + File sửa: `include/lob/OrderBook.h`, `src/OrderBook.cpp`
+    + Việc làm:
+      * Thêm `OrderLocation` và `orderIndex_` (`std::unordered_map`) vào `OrderBook`.
+      * Chặn trùng `OrderId` trong `addOrder`.
+      * Cập nhật `matchOrder` xóa `restingOrder.id` khỏi `orderIndex_` ngay khi khớp hết.
+      * Cài đặt `cancelOrder(OrderId id)` tối ưu O(1) (xóa luôn tầng giá nếu rỗng).
+    + Reviewer: [TV2]
+
+  - PR #6 [TV2] — Nhánh `feat/p3-modify-and-tests` (Làm sau khi PR #5 merge)
+    + File sửa: `include/lob/OrderBook.h` (khai báo `modifyOrder`), `src/OrderBook.cpp`,
+                `tests/test_orderbook.cpp`
+    + Việc làm:
+      * Cài đặt `modifyOrder(OrderId id, Price newPrice, Quantity newQuantity)`.
+      * Cập nhật `checkInvariants()` bổ sung Bất biến số 4 (khớp 1-1 với `orderIndex_`).
+      * Viết Unit Test đầy đủ: Cancel lệnh ở đầu/giữa/cuối/duy nhất của mức giá, Cancel ID không
+        tồn tại, Cancel lệnh đã khớp hết, Duplicate OrderId, Modify giảm qty (giữ FIFO) vs tăng qty/đổi giá.
+    + Reviewer: [TV1]
+
+--------------------------------------------------------------------------------
+[PHASE 4] Các loại lệnh Sàn giao dịch Thực tế (`Market`, `IOC`, `FOK`)
+* Kiến thức bản chất & C++ cần nắm:
+  - GTC (treo phần dư), Market (khớp mọi giá, hủy phần dư), IOC (khớp tới giá giới hạn, hủy phần dư),
+    FOK (Atomic: khớp đủ 100% hoặc hủy toàn bộ không làm đổi sổ -> cần hàm pre-check `const`).
+
+* Phân công & Thứ tự Merge (Đảo vai — TV2 cầm OrderType/Market/IOC, TV1 cầm FOK):
+  - PR #7 [TV2] — Nhánh `feat/p4-market-ioc` (MERGE TRƯỚC vì thêm `enum class OrderType`)
+    + File sửa: `include/lob/OrderBook.h`, `src/OrderBook.cpp`, `tests/test_orderbook.cpp`
+    + Việc làm:
+      * Thêm `enum class OrderType { GTC, Market, IOC, FOK };` (mặc định `GTC` trong `Order`).
+      * Cài đặt logic cho `Market` và `IOC` + Unit Test tương ứng.
+    + Reviewer: [TV1]
+
+  - PR #8 [TV1] — Nhánh `feat/p4-fok` (Làm sau khi PR #7 merge)
+    + File sửa: `include/lob/OrderBook.h`, `src/OrderBook.cpp`, `tests/test_orderbook.cpp`
+    + Việc làm:
+      * Cài đặt hàm pre-scan `const` kiểm tra đủ thanh khoản cho `FOK` trước khi khớp.
+      * Cài đặt xử lý `FOK` đảm bảo tính atomic (không sửa sổ nếu thiếu dù chỉ 1 đơn vị).
+      * Viết Unit Test cho FOK (đủ thanh khoản 1 tầng / nhiều tầng, thiếu thanh khoản -> sổ giữ nguyên).
+    + Reviewer: [TV2]
+
+--------------------------------------------------------------------------------
+[PHASE 5] Kiểm thử Đối chứng (Differential Fuzzing — 100,000 lệnh ngẫu nhiên)
+* Kiến thức bản chất & C++ cần nắm:
+  - Differential Testing (so sánh Engine tối ưu với 1 `NaiveOrderBook` đơn giản chắc chắn đúng).
+  - `<random>` (`std::mt19937_64` với seed cố định để tái hiện bug 100%).
+
+* Phân công & Thứ tự Merge (SONG SONG 100% KHÁC FILE — 0 CONFLICT):
+  - PR #9 [TV1] — Nhánh `test/p5-naive-reference`
+    + File mới: `tests/NaiveOrderBook.h`
+    + Việc làm: Viết bộ `NaiveOrderBook` (~50-80 dòng dùng `std::vector` + `std::sort`, ưu tiên
+                dễ đọc và chắc chắn đúng làm chuẩn đối chiếu) hỗ trợ Add/Cancel/Modify & OrderType.
+    + Reviewer: [TV2]
+
+  - PR #10 [TV2] — Nhánh `test/p5-differential-fuzzer` (Nối vào `NaiveOrderBook.h` sau PR #9)
+    + File mới/sửa: `tests/test_fuzzer.cpp`, `CMakeLists.txt`
+    + Việc làm: Viết Stress Test sinh 100,000 lệnh ngẫu nhiên bắn song song vào cả 2 Engine;
+                sau MỖI lệnh kiểm tra từng Trade, Best Bid/Ask và `checkInvariants()`.
+    + Reviewer: [TV1]
+
+--------------------------------------------------------------------------------
+[PHASE 6.1] Benchmark Baseline (Đo đạc Hiệu năng Khoa học)
+* Kiến thức bản chất & C++ cần nắm:
+  - Debug (`-O0`) vs Release (`-O3 -DNDEBUG`), `<chrono>` (`steady_clock`), Warm-up.
+  - Throughput (orders/sec) và Tail Latency (p50, p95, p99 nanoseconds/order).
+
+* Phân công & Thứ tự Merge (SONG SONG KHÁC FILE — 0 CONFLICT):
+  - PR #11 [TV2] — Nhánh `perf/p6-benchmark-baseline`
+    + File mới/sửa: `benchmarks/bench_orderbook.cpp`, `CMakeLists.txt`
+    + Việc làm: Viết chương trình Benchmark đo Throughput & p50/p95/p99 cho các kịch bản
+                Add / Match / Cancel / Mix ở cấu hình Release (`-O3`).
+    + Reviewer: [TV1]
+
+  - PR #12 [TV1] — Nhánh `docs/p6-architecture-and-results`
+    + File sửa: `README.md`
+    + Việc làm: Chạy đo đạc đa kịch bản, tổng hợp bảng kết quả, vẽ sơ đồ kiến trúc và viết mục
+                phân tích bản chất hiệu năng (tại sao p99 cao do heap allocation & cache miss).
+    + Reviewer: [TV2]
+
+--------------------------------------------------------------------------------
+[STRETCH GOAL — PHASE 6.2 (TÙY CHỌN SAU KHI HOÀN THÀNH 100% 12 PR TRÊN)]
+- Mở nhánh `perf/intrusive-pool` thử nghiệm thay `std::list` bằng Intrusive Doubly Linked List
+  + Pre-allocated Object Pool để so sánh A/B trực tiếp bằng chính bộ Benchmark ở Phase 6.1.
+- Không làm sớm trước Phase 6.1 để tránh bị ngợp cú pháp low-level khi chưa vững nền C++17 & STL.
+================================================================================
